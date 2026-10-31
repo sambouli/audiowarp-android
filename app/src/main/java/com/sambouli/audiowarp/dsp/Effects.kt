@@ -1,6 +1,7 @@
 package com.sambouli.audiowarp.dsp
 
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -71,15 +72,37 @@ class EffectEngine(private val sampleRate: Int = WavIO.SAMPLE_RATE) {
 
     // 3. Ghost — pitch-shifted (-5 st) feedback delay with darkened repeats over the dry head.
     internal fun ghostDelay(input: FloatArray): FloatArray {
-        // Build the wet path on a buffer extended by one delay so the FIRST echo tap
-        // (dry delayed by `delaySamples`) lands inside the buffer instead of being
-        // truncated away — without padding, an impulse shorter than the delay would
-        // produce zero tail energy and the effect would be dry-only.
         val delaySamples = (sampleRate * 0.28f).toInt()
-        val padded = FloatArray(input.size + delaySamples)
-        System.arraycopy(input, 0, padded, 0, input.size)
-        val shifted = Pitch.pitchShift(padded, -5.0)
-        val wet = Dsp.feedbackEcho(shifted, delaySamples, feedback = 0.45f, mixWet = 0.75f)
+        // Wet path = the input DELAYED by delaySamples (classic echo), then
+        // pitch-shifted -5 st and darkened. Delay FIRST, on a buffer long enough
+        // to hold the shifted copy (input + 2*delay): delaying after shifting
+        // pushes the first tap past the dry-length truncation in Dsp.mix.
+        val wetLen = input.size + 2 * delaySamples
+        val delayed = FloatArray(wetLen)
+        System.arraycopy(input, 0, delayed, delaySamples, input.size)
+        val shifted = Pitch.pitchShift(delayed, -5.0)
+        // pitchShift compresses time by `factor` before OLA-restoring length, so the
+        // head of the delayed impulse sits at ~delaySamples / factor (~7649 for -5 st).
+        // Locate it by scanning around that expectation, then align the echo head to
+        // index `delaySamples` in a wet buffer that is as long as `shifted` (Dsp.mix
+        // trims to dry length afterwards). The historic "wet is all zeros" bug was NOT
+        // here: zeroPhaseLowPass used to leave the buffer time-reversed, mirroring the
+        // echo past the dry cut (fixed in Dsp.zeroPhaseLowPass).
+        val expectedHead = (delaySamples / Math.pow(2.0, -5.0 / 12.0)).toInt()
+        var head = -1
+        val scanFrom = max(0, expectedHead - 2048)
+        val scanTo = min(shifted.size - 1, expectedHead + 2048)
+        for (i in scanFrom..scanTo) { if (abs(shifted[i]) > 1e-6f) { head = i; break } }
+        if (head < 0) head = expectedHead.coerceIn(0, max(0, shifted.size - 1))
+        // Copy the WHOLE shifted buffer into a wet that is long enough to hold it,
+        // shifted left by (head - delaySamples): the echo head lands exactly at
+        // index delaySamples. wet stays full length through the LPF (a dry-length
+        // cut BEFORE the filter truncates the tail — that was the all-zero bug);
+        // Dsp.mix trims to dry length afterwards.
+        val shift = (head - delaySamples).coerceIn(0, max(0, shifted.size - 1))
+        val wet = FloatArray(shifted.size)
+        val n = minOf(shifted.size - shift, wet.size)
+        for (i in 0 until n) wet[i] = shifted[shift + i]
         Dsp.zeroPhaseLowPass(wet, 2400f, sampleRate)
         return Dsp.mix(input, wet, fadeSamples = sampleRate / 10)
     }

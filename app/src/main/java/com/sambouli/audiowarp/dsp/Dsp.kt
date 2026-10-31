@@ -144,13 +144,22 @@ object Dsp {
     /** Zero-phase (forward+backward) low-pass: no group-delay smear. */
     fun zeroPhaseLowPass(buf: FloatArray, cutoffHz: Float, sampleRate: Int) {
         lowPass(buf, cutoffHz, sampleRate)
+        reverseInPlace(buf)
+        lowPass(buf, cutoffHz, sampleRate)
+        // Restore time orientation: the buffer is mirrored after the backward
+        // pass. Forgetting this flip leaves the signal time-reversed — spectral
+        // tests still pass (spectrum is reversal-invariant) but any positional
+        // assertion (echo at `delaySamples`) sees the tail mirrored to the end.
+        reverseInPlace(buf)
+    }
+
+    private fun reverseInPlace(buf: FloatArray) {
         var i = 0
         var j = buf.size - 1
         while (i < j) {
             val t = buf[i]; buf[i] = buf[j]; buf[j] = t
             i++; j--
         }
-        lowPass(buf, cutoffHz, sampleRate)
     }
 
     /** Soft-clip saturation, drive > 1 pushes harder. tanh curve. */

@@ -160,7 +160,10 @@ class EffectsTest {
     }
 
     @Test fun ghostKeepsDryHeadAndAddsDarkenedTail() {
-        val impulse = FloatArray(sr / 4).also { it[0] = 1f }
+        // Clip must be LONGER than the echo delay (4480 samples): with a 0.25 s
+        // clip the first tap lands past the end of the dry buffer and the tail
+        // window below is structurally empty — the test could never pass.
+        val impulse = FloatArray(sr).also { it[0] = 1f }
         val dry = engine.apply(Effect.NONE, impulse)
         val out = engine.apply(Effect.GHOST, impulse)
         assertEquals("ghost preserves length", dry.size, out.size)

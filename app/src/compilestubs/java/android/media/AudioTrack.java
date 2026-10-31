@@ -4,11 +4,10 @@ package android.media;
  * COMPILE-TIME STUB — DO NOT SHIP.
  * The platform android.jar for API 35 in this SDK installation exposes a truncated
  * AudioTrack surface (javap sees the real methods, kotlinc's class reader does not),
- * so we shadow it with this source stub to compile. At runtime the REAL framework
- * android.media.AudioTrack from the device ROM wins over anything in the APK
- * (java.* and android.* are on the bootclasspath). This file is excluded from release
- * packaging by app/build.gradle.kts (packagingOptions) and must never be relied on
- * at runtime.
+ * so we shadow it with this source stub to compile. This file is compiled SEPARATELY
+ * (see app/build.gradle.kts: compileStubClasses) and its output is placed only on
+ * the Kotlin compile classpath — NEVER dexed into the APK. At runtime the REAL
+ * framework android.media.AudioTrack from the device ROM is used.
  */
 public class AudioTrack {
     public static final int MODE_STATIC = 0;
@@ -29,6 +28,7 @@ public class AudioTrack {
 
     public interface OnPlaybackPositionUpdateListener {
         void onMarkerReached(AudioTrack track);
+
         void onPeriodicNotification(AudioTrack track);
     }
 

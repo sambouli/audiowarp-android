@@ -12,8 +12,8 @@ android {
         applicationId = "com.sambouli.audiowarp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -47,6 +47,48 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// COMPILE-TIME STUB HYGIENE (critical):
+// app/src/compilestubs/java only shadows android.media.AudioTrack so kotlinc can
+// compile against the truncated SDK-35 surface. Those .class files MUST NEVER be
+// dexed into the APK — a bundled android.media.AudioTrack shadows the real
+// framework class on some devices and crashes playback with NoSuchMethodError.
+// The stub dir is NOT registered as any sourceSet, so AGP never compiles or dexes
+// it; we compile it ourselves here and place it ONLY on the Kotlin compile
+// classpath (kotlinOptions.freeCompilerArgs += -Xtype-precedence... not needed:
+// bootclasspath android.jar wins for resolution of real members, while the stub
+// supplies the missing ones).
+// ---------------------------------------------------------------------------
+val stubSrcDir = file("src/compilestubs/java")
+val stubOutDir = layout.buildDirectory.dir("stub-classes")
+
+val compileStubClasses by tasks.registering(JavaCompile::class) {
+    description = "Compile android.media.AudioTrack compile-time stub (never dexed)."
+    group = "build"
+    source = fileTree(stubSrcDir)
+    classpath = files(android.bootClasspath)
+    destinationDir = stubOutDir.get().asFile
+    options.compilerArgs.add("-nowarn")
+    sourceCompatibility = "17"
+    targetCompatibility = "17"
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile::class.java).configureEach {
+    dependsOn(compileStubClasses)
+    // Append (do NOT re-wrap `libraries` — self-reference causes infinite recursion).
+    libraries.from(files(stubOutDir))
+}
+
+// Belt & braces: if anything ever leaks the stub .class files into a javac output
+// dir that AGP dexes, delete them from the dex input right before dexing runs.
+tasks.matching { it.name.startsWith("dexBuilder") || it.name.startsWith("mergeDebugJavaResource") }.configureEach {
+    doFirst {
+        fileTree(layout.buildDirectory.dir("intermediates/javac")) {
+            include("**/android/media/AudioTrack*.class")
+        }.files.forEach { it.delete() }
     }
 }
 
