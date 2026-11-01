@@ -30,21 +30,41 @@ app/src/main/java/com/sambouli/audiowarp/
 │   ├── Pitch.kt    #   resample, pitch shift, OLA time stretch, NCCF pitch estimator
 │   ├── Effects.kt  #   12-effect engine
 │   └── WavIO.kt    #   RIFF/WAVE reader & writer
-├── audio/Recorder.kt
-├── player/PlayerEngine.kt
+├── audio/Recorder.kt            # AudioRecord capture, audio-priority thread
+├── player/PlayerEngine.kt       # AudioTrack playback: static clips, streaming fallback
 ├── data/ClipStore.kt
 └── ui/             # Jetpack Compose (ViewModel + StateFlow, WaveformCanvas)
 ```
 
-`app/src/compilestubs/java/android/media/AudioTrack.java` is a **compile-time-only** stub
-(added via `sourceSets`, never dexed — verified absent from the APK) that works around an
-SDK-surface quirk when compiling against API 35.
+## AudioTrack: no stubs, no wrapper (read before touching playback)
+
+There is no `android.media.AudioTrack` stub in this project, and none may be added. An earlier
+revision carried one so kotlinc could compile a four-argument `AudioTrack` constructor. That
+constructor does not exist: API 35 exports
+`AudioTrack(AudioAttributes, AudioFormat, int bufferSizeInBytes, int mode, int notificationThresholdInFrames)`.
+Compiling against a hand-written stub hid the mismatch from the compiler, so the APK shipped a call
+to a signature no device ROM exports. The first press of play resolved it as `NoSuchMethodError`,
+which is an `Error` and so walked straight past the `catch (_: Exception)` around the whole block —
+the process died on every play, warped clip or not. The unit suite could not see it because
+Robolectric shadows `AudioTrack` and never runs the real constructor.
+
+Three rules follow from that:
+
+- Call only constructors and methods confirmed against
+  `$ANDROID_HOME/platforms/<api>/android.jar` with `javap -classpath <jar> -public android.media.AudioTrack`.
+  If the SDK appears to be missing something, it is the call site that is wrong, not the SDK.
+- Reach an overload that only exists on newer releases behind `Build.VERSION.SDK_INT`
+  (`Build.VERSION_CODES.TIRAMISU` and friends), never behind a stub.
+- Anything a gesture reaches must not let a `Throwable` out. A Compose click handler runs on the UI
+  thread, so an escaped `Error` there is a dead app rather than a failed tap.
+
+`app/build.gradle.kts` fails the build if `app/src/main` grows an `android/` or `java/` directory.
 
 ## Build
 
 ```bash
 ./gradlew assembleDebug          # APK -> app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest      # ~55 JUnit tests (DSP math, WAV IO, state)
+./gradlew testDebugUnitTest      # 62 JUnit tests (DSP math, WAV IO, player contract)
 ```
 
 Requirements: JDK 17+, Android SDK 35 (`ANDROID_HOME` set), AGP 8.7.3, Kotlin 2.0.21.

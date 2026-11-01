@@ -12,8 +12,8 @@ android {
         applicationId = "com.sambouli.audiowarp"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -51,45 +51,36 @@ android {
 }
 
 // ---------------------------------------------------------------------------
-// COMPILE-TIME STUB HYGIENE (critical):
-// app/src/compilestubs/java only shadows android.media.AudioTrack so kotlinc can
-// compile against the truncated SDK-35 surface. Those .class files MUST NEVER be
-// dexed into the APK — a bundled android.media.AudioTrack shadows the real
-// framework class on some devices and crashes playback with NoSuchMethodError.
-// The stub dir is NOT registered as any sourceSet, so AGP never compiles or dexes
-// it; we compile it ourselves here and place it ONLY on the Kotlin compile
-// classpath (kotlinOptions.freeCompilerArgs += -Xtype-precedence... not needed:
-// bootclasspath android.jar wins for resolution of real members, while the stub
-// supplies the missing ones).
+// NO android.* SOURCE STUBS (guardrail, see assertNoFrameworkStubs).
+//
+// This module once carried a hand-written `android.media.AudioTrack` used only to get
+// kotlinc past a constructor it could not see. A stub like that is a trap twice over: any
+// framework method it forgets breaks the build, and if its .class is ever dexed the
+// app ships a class that shadows the platform one. Worse, compiling against a stub lets
+// the app call a constructor the device ROM does not export — that resolves at runtime as
+// NoSuchMethodError, which is an Error, so it walks straight past the `catch (Exception)`
+// guards and ends the process on the first play. The fix was to compile against the real
+// android.jar and call the five-argument AudioTrack constructor the SDK actually exports.
+//
+// So: never add a stub. If the SDK looks like it is missing a member, check it against
+// $ANDROID_HOME/platforms/<api>/android.jar with javap before writing anything, and reach
+// older/newer overloads behind a Build.VERSION.SDK_INT check.
 // ---------------------------------------------------------------------------
-val stubSrcDir = file("src/compilestubs/java")
-val stubOutDir = layout.buildDirectory.dir("stub-classes")
-
-val compileStubClasses by tasks.registering(JavaCompile::class) {
-    description = "Compile android.media.AudioTrack compile-time stub (never dexed)."
-    group = "build"
-    source = fileTree(stubSrcDir)
-    classpath = files(android.bootClasspath)
-    destinationDir = stubOutDir.get().asFile
-    options.compilerArgs.add("-nowarn")
-    sourceCompatibility = "17"
-    targetCompatibility = "17"
-}
-
-tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile::class.java).configureEach {
-    dependsOn(compileStubClasses)
-    // Append (do NOT re-wrap `libraries` — self-reference causes infinite recursion).
-    libraries.from(files(stubOutDir))
-}
-
-// Belt & braces: if anything ever leaks the stub .class files into a javac output
-// dir that AGP dexes, delete them from the dex input right before dexing runs.
-tasks.matching { it.name.startsWith("dexBuilder") || it.name.startsWith("mergeDebugJavaResource") }.configureEach {
-    doFirst {
-        fileTree(layout.buildDirectory.dir("intermediates/javac")) {
-            include("**/android/media/AudioTrack*.class")
-        }.files.forEach { it.delete() }
+val assertNoFrameworkStubs by tasks.registering {
+    description = "Fail the build if app/src/main sources declare android.* or java.* types."
+    group = "verification"
+    doLast {
+        val offenders = fileTree("src/main/java") { include("**/android/**", "**/java/**") }.files
+        if (offenders.isNotEmpty()) {
+            error(
+                "app/src/main must not declare platform types; they shadow the device ROM at runtime.\n" +
+                    offenders.joinToString("\n") { "  ${it.path}" }
+            )
+        }
     }
+}
+tasks.matching { it.name.matches(Regex("(assemble|bundle|dexBuilder|mergeDebugJavaResource).*")) }.configureEach {
+    dependsOn(assertNoFrameworkStubs)
 }
 
 dependencies {

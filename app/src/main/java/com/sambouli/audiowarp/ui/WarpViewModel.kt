@@ -2,6 +2,7 @@ package com.sambouli.audiowarp.ui
 
 import android.app.Application
 import android.content.Intent
+import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -94,7 +95,7 @@ class WarpViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val (samples, sr) = withContext(Dispatchers.Default) { WavIO.wavToFloats(wav) }
             val env = envelope(samples, BARS)
-            player.load(samples, sr)
+            runGuarded("load clip") { player.load(samples, sr) }
             _state.value = _state.value.copy(
                 busy = false,
                 sourceWav = wav,
@@ -120,7 +121,7 @@ class WarpViewModel(app: Application) : AndroidViewModel(app) {
             }
             val (samples, sr) = WavIO.wavToFloats(out)
             val pos = player.positionSec.toFloat()
-            player.load(samples, sr)
+            runGuarded("load effect output") { player.load(samples, sr) }
             _state.value = _state.value.copy(
                 busy = false,
                 processedWav = out,
@@ -133,16 +134,44 @@ class WarpViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Start or pause playback.
+     *
+     * Everything a play press touches runs inside the catch: the engine already refuses to let a
+     * Throwable out of it, but this is the boundary the Compose click handler calls, so a fault
+     * escaping anywhere else on this path — a seek, the position poller — would end the process
+     * instead of just leaving the clip stopped. The user sees why it will not play instead of
+     * watching the app vanish.
+     */
     fun togglePlay() {
-        if (player.isEmpty) return
-        if (player.state == PlayerEngine.State.PLAYING) {
-            player.pause()
-            _state.value = _state.value.copy(playing = false)
-        } else {
-            player.play(viewModelScope)
-            _state.value = _state.value.copy(playing = true)
-            pollPosition()
+        if (player.isEmpty) {
+            _state.value = _state.value.copy(message = "Nothing to play yet")
+            return
         }
+        if (player.state == PlayerEngine.State.PLAYING) {
+            runGuarded("pause") { player.pause() }
+            _state.value = _state.value.copy(playing = false)
+            return
+        }
+        if (!runGuarded("play") { player.play(viewModelScope) }) return
+        if (player.audioUnavailable) {
+            _state.value = _state.value.copy(
+                playing = false,
+                message = "Device refused audio output",
+            )
+            return
+        }
+        _state.value = _state.value.copy(playing = true)
+        pollPosition()
+    }
+
+    /** Run a playback control, reporting rather than propagating anything it throws. */
+    private inline fun runGuarded(what: String, action: () -> Unit): Boolean = try {
+        action(); true
+    } catch (t: Throwable) {
+        try { Log.e(TAG, "could not $what", t) } catch (_: Throwable) {} // a logger must never be the fault
+        _state.value = _state.value.copy(playing = false, message = "Playback failed: ${t.javaClass.simpleName}")
+        false
     }
 
     private var polling = false
@@ -160,7 +189,7 @@ class WarpViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun seek(sec: Float) {
-        player.seekTo(sec.toDouble())
+        if (!runGuarded("seek") { player.seekTo(sec.toDouble()) }) return
         _state.value = _state.value.copy(positionSec = player.positionSec.toFloat())
     }
 
@@ -221,6 +250,7 @@ class WarpViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        private const val TAG = "WarpViewModel"
         const val BARS = 160
         const val MAX_RECORD_SEC = 30
 
