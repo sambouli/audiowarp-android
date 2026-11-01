@@ -203,15 +203,20 @@ class PlayerEngine {
         val static = data.isNotEmpty()
         val mode = if (static) AudioTrack.MODE_STATIC else AudioTrack.MODE_STREAM
         val requested = if (static) data.size else minOf(data.size, MIN_STREAM_FRAMES)
-        // The constructor argument is named bytes but the framework reads it as frames.
-        val at = AudioTrack(attributes, format, requested * BYTES_PER_FRAME, mode, notificationFrames(requested))
+        // bufferSizeInBytes is genuinely bytes: the framework converts it to frames, and for a
+        // static track the capacity it then reports is exactly that conversion. Multiplying by
+        // the frame size here is what the parameter asks for, not a workaround.
+        val at = AudioTrack(
+            attributes, format, requested * BYTES_PER_FRAME, mode,
+            notificationFrames(requested),
+        )
         if (at.state != AudioTrack.STATE_INITIALIZED) {
             at.release()
             return null
         }
-        // The framework clamps the request to what the device allows, so the capacity to
-        // honour is the one it reports back, not the one asked for. A clip that overflows the
-        // device's static buffer cannot be served by one — fall back to a streaming track.
+        // Read the capacity back rather than trusting `requested`: the framework may raise a
+        // request below the output sink's minimum, so what it hands over is not what was asked
+        // for. A static track's frame count never changes after construction, so this is final.
         val capacity = at.getBufferCapacityInFrames().coerceAtLeast(1)
         if (static && data.size > capacity) {
             at.release()
@@ -226,7 +231,10 @@ class PlayerEngine {
         return tune(at)
     }
 
-    /** A streaming track with no data in it yet; [streamFeed] fills it as playback runs. */
+    /**
+     * A streaming track with no data in it yet. [streamInto] refills it from the sample array as
+     * playback drains it, which is what lets a clip longer than the static buffer still play.
+     */
     private fun buildStreamingTrack(
         attributes: AudioAttributes,
         format: AudioFormat,
@@ -317,6 +325,7 @@ class PlayerEngine {
         track = null
         streaming = false
         streamFrames = 0
+        streamFrom = 0
         writtenFrames = 0
     }
 
@@ -331,7 +340,11 @@ class PlayerEngine {
 
         /**
          * Notification marker for a track holding [writtenFrames]: the last frame it really has.
-         * One past the end addresses nothing the listener can reach.
+         *
+         * Two documented bounds shape this. The marker addresses frames the track actually holds,
+         * so one past the end is out of range; and a marker of exactly zero *disables* the marker,
+         * which is why an empty or single-frame track yields 0 (nothing to notify about) instead of
+         * an artificial non-zero position.
          */
         fun markerFor(writtenFrames: Int): Int = maxOf(0, writtenFrames - 1)
 

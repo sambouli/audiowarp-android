@@ -31,10 +31,15 @@ class StaticTrackContractTest {
         }
     }
 
-    /** A track with nothing in it must not be handed a marker pointing before its start. */
+    /**
+     * A track with nothing in it must not be handed a marker pointing before its start. Zero is
+     * also what disables a marker, which is the right reading for an empty track: there is no
+     * frame whose arrival is worth reporting.
+     */
     @Test
     fun markerOfEmptyBufferIsZero() {
         assertEquals(0, PlayerEngine.markerFor(0))
+        assertEquals("a single-frame track has no frame after the first to mark", 0, PlayerEngine.markerFor(1))
     }
 
     /**
